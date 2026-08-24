@@ -4,10 +4,8 @@ sentence-transformers (all-MiniLM-L6-v2) from filename + first ~500 chars
 of readable text content.  Stores the embedding as a binary blob in SQLite.
 """
 
-import json
 import logging
 import pickle
-import sqlite3
 from pathlib import Path
 from typing import Optional
 

@@ -41,7 +41,7 @@ import requests
 import numpy as np
 
 from scanner import get_connection, is_likely_text, DB_PATH
-from scorer import HALF_LIFE_DAYS, PATTERN_BONUS
+from scorer import HALF_LIFE_DAYS
 
 logger = logging.getLogger(__name__)
 
