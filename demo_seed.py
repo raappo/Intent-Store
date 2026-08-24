@@ -20,6 +20,7 @@ def main():
         "debug_crawler_2022.log": {"atime": now - 1500*86400, "mtime": now - 1600*86400},
         "project_alpha_notes_2021.md": {"atime": now - 900*86400, "mtime": now - 1000*86400},
         "tax_return_2025.txt": {"atime": now - 320*86400, "mtime": now - 320*86400},
+        "tax_return_2024.txt": {"atime": now - 720*86400, "mtime": now - 720*86400},
         "random_meeting_notes_2020.txt": {"atime": now - 1800*86400, "mtime": now - 2000*86400},
     }
 

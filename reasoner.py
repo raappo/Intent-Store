@@ -131,7 +131,7 @@ def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float, action: str)
     )
 
     return f"""You are a storage intelligence assistant for a Linux workstation.
-The deterministic system has ALREADY DECIDED that the action for this file is: {action.upper()}
+This file has been evaluated and the system concluded the action should be: {action.upper()}
 
 === FILE METADATA ===
 Filename: {filename}
@@ -143,8 +143,8 @@ Semantic Similarity to Important Documents: {sim_score:.3f} (higher is more impo
 {content_section}
 
 === INSTRUCTIONS ===
-Your ONLY job is to write a 1-2 sentence natural-language justification for the ALREADY DECIDED action ({action.upper()}).
-- Reference something specific about the file's actual content or type. DO NOT just say "content bears little resemblance to high-importance categories".
+Your ONLY job is to write a 1-2 sentence natural-language justification explaining why the system chose to {action.upper()} this file.
+- Reference something specific about the file's actual content or type. Provide specific reasoning based on the file content.
 - RECURRENCE REASONING: If the filename or content suggests a periodic/seasonal document (tax, invoice, annual report, renewal), explicitly reason about it. For example, "even though unused recently, this type of file is typically needed again at a predictable future point". This is critical.
 - Varies in phrasing between files (do not use a repeated template sentence structure).
 
@@ -161,7 +161,14 @@ def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
     filename      = Path(row["path"]).name
 
     raw_decay = math.exp(-math.log(2) / HALF_LIFE_DAYS * days_accessed)
-    pattern_active = score > raw_decay * 1.05
+    import re
+    _DATE_SUFFIX_RE = re.compile(r"[-_\s]?(\d{4}|\d{2}[-_]\d{2}|\d{1,3})$")
+    family = _DATE_SUFFIX_RE.sub("", Path(row["path"]).stem).strip().lower()
+    
+    # We can detect if pattern bonus was applied by checking if score is significantly higher than raw_decay + sim_bonus
+    # Alternatively, just calculate sim_bonus directly
+    sim_bonus = max(0.0, sim_score - 0.2) * 0.40
+    pattern_active = (score - raw_decay - sim_bonus) > 0.1
 
     signals = []
     
@@ -196,7 +203,10 @@ def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
     if pattern_active and action == "keep":
         justification += " I recommend keeping it because periodic documents are often needed later despite long dormant periods."
     elif action == "archive":
-        justification += " Given the lack of recent use and low importance, archiving is safe."
+        if pattern_active:
+            justification += " Despite periodic reuse, its low overall relevance similarity means archiving is still reasonable."
+        else:
+            justification += " Given the lack of recent use and low importance, archiving is safe."
 
     return {"action": action, "justification": justification}
 
@@ -246,12 +256,32 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
             invalid = False
             raw_lower = raw_just.lower()
             
-            if target_action == "keep" and ("archive" in raw_lower or "compress" in raw_lower):
+            if "already decided" in raw_lower or "your only job" in raw_lower or "system chose to" in raw_lower:
                 invalid = True
-            elif target_action == "archive" and ("keep" in raw_lower or "compress" in raw_lower):
-                invalid = True
-            elif target_action == "compress" and ("keep" in raw_lower or "archive" in raw_lower):
-                invalid = True
+                logger.warning("LLM justification for %s contained leaked prompt meta-language.", path)
+            elif target_action == "keep":
+                if ("archive" in raw_lower or "compress" in raw_lower) and "does not require archiv" not in raw_lower:
+                    invalid = True
+                archive_keywords = ["bears little resemblance", "low importance", "safe to archive", "not important"]
+                has_arch_kw = any(kw in raw_lower for kw in archive_keywords)
+                has_keep_neg = any(neg in raw_lower for neg in ["is important", "very important", "highly important"])
+                if has_arch_kw and not has_keep_neg:
+                    invalid = True
+            elif target_action == "archive":
+                keep_keywords = [
+                    "keep", "kept", "compress", "retention", "retain", 
+                    "important", "crucial", "valuable", "preserve",
+                    "does not require archiv"
+                ]
+                has_kw = any(kw in raw_lower for kw in keep_keywords)
+                has_neg = any(neg in raw_lower for neg in [
+                    "not important", "unimportant", "little importance", "low importance"
+                ])
+                if has_kw and not has_neg:
+                    invalid = True
+            elif target_action == "compress":
+                if "keep" in raw_lower or "archive" in raw_lower:
+                    invalid = True
                 
             if invalid:
                 logger.warning("LLM justification for %s contradicts action %s — activating fallback.", path, target_action)
