@@ -107,7 +107,18 @@ def _call_ollama(prompt: str) -> Optional[dict]:
         return None
 
 
-def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float) -> str:
+def _decide_action(row: sqlite3.Row) -> str:
+    days_accessed = _days_ago(row["atime"])
+    score         = row["importance_score"]
+    size_bytes    = row["size"]
+
+    action = "archive" if score < 0.2 else "keep"
+    if size_bytes > 1024 * 1024 * 100 and days_accessed > 180:
+        action = "archive"
+    return action
+
+
+def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float, action: str) -> str:
     days_accessed  = _days_ago(row["atime"])
     days_modified  = _days_ago(row["mtime"])
     score          = row["importance_score"]
@@ -120,7 +131,7 @@ def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float) -> str:
     )
 
     return f"""You are a storage intelligence assistant for a Linux workstation.
-Analyze this file and decide what to do with it (archive, keep, or compress). You must return ONLY valid JSON.
+The deterministic system has ALREADY DECIDED that the action for this file is: {action.upper()}
 
 === FILE METADATA ===
 Filename: {filename}
@@ -132,13 +143,13 @@ Semantic Similarity to Important Documents: {sim_score:.3f} (higher is more impo
 {content_section}
 
 === INSTRUCTIONS ===
-Write a 1-2 sentence justification for your recommendation that:
-- References something specific about the file's actual content or type. DO NOT just say "content bears little resemblance to high-importance categories".
+Your ONLY job is to write a 1-2 sentence natural-language justification for the ALREADY DECIDED action ({action.upper()}).
+- Reference something specific about the file's actual content or type. DO NOT just say "content bears little resemblance to high-importance categories".
 - RECURRENCE REASONING: If the filename or content suggests a periodic/seasonal document (tax, invoice, annual report, renewal), explicitly reason about it. For example, "even though unused recently, this type of file is typically needed again at a predictable future point". This is critical.
 - Varies in phrasing between files (do not use a repeated template sentence structure).
 
 Respond in exactly this JSON format:
-{{"action": "archive" | "keep" | "compress", "justification": "<your specific, dynamic reasoning>"}}
+{{"justification": "<your specific, dynamic reasoning>"}}
 """
 
 
@@ -169,10 +180,7 @@ def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
 
     signals.append(f"it has not been accessed in {days_accessed:.0f} days")
 
-    action = "archive" if score < 0.2 else "keep"
-    
-    if size_bytes > 1024 * 1024 * 100 and days_accessed > 180:
-        action = "archive"
+    action = _decide_action(row)
 
     # Make fallback phrasing dynamic
     import random
@@ -224,13 +232,33 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
         sim     = _cosine_similarity(emb_vec, centroid)
         snippet = _read_snippet(path)
 
-        prompt = _build_prompt(row, snippet, sim)
+        target_action = _decide_action(row)
+
+        prompt = _build_prompt(row, snippet, sim, target_action)
         result = _call_ollama(prompt)
 
         is_llm = True
         if result is None:
             result = _fallback_recommend(row, sim)
             is_llm = False
+        else:
+            raw_just = result.get("justification", "")
+            invalid = False
+            raw_lower = raw_just.lower()
+            
+            if target_action == "keep" and ("archive" in raw_lower or "compress" in raw_lower):
+                invalid = True
+            elif target_action == "archive" and ("keep" in raw_lower or "compress" in raw_lower):
+                invalid = True
+            elif target_action == "compress" and ("keep" in raw_lower or "archive" in raw_lower):
+                invalid = True
+                
+            if invalid:
+                logger.warning("LLM justification for %s contradicts action %s — activating fallback.", path, target_action)
+                result = _fallback_recommend(row, sim)
+                is_llm = False
+            else:
+                result["action"] = target_action
 
         action        = result.get("action", "keep")
         raw_just      = result.get("justification", "")
