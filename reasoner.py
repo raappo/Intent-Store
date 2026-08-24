@@ -47,8 +47,14 @@ logger = logging.getLogger(__name__)
 
 # ── Ollama settings ──────────────────────────────────────────────────────────
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-OLLAMA_MODEL    = "llama3"          # change to whichever model is pulled locally
-OLLAMA_TIMEOUT  = 60                # seconds
+# qwen2.5:0.5b fits comfortably in ~400 MB RAM and runs on CPU-only hardware
+# (e.g. Ryzen 3 3250U / integrated GPU). Swap for a larger model if you have
+# a discrete GPU or more VRAM — e.g. qwen2.5:3b, llama3.2:1b, phi3:mini.
+OLLAMA_MODEL    = "qwen2.5:0.5b"
+# Hard 7-second wall-clock timeout per Ollama call.  If the model hasn't
+# responded within that window (slow CPU, model not yet loaded, service down)
+# the call returns None and the rich multi-signal fallback engine takes over.
+OLLAMA_TIMEOUT  = 7                 # seconds — sized for a 2-core laptop CPU
 
 # ── Candidacy threshold ──────────────────────────────────────────────────────
 CANDIDATE_THRESHOLD = 0.45          # files below this score are evaluated
@@ -129,7 +135,14 @@ def _get_importance_centroid() -> Optional[np.ndarray]:
 
 
 def _call_ollama(prompt: str) -> Optional[dict]:
-    """POST to Ollama and parse the first valid JSON object from the response."""
+    """POST to Ollama and return the parsed JSON response, or None on any failure.
+
+    Failure modes that all return None (triggering the fallback engine):
+      - Ollama not running / connection refused
+      - Response exceeds OLLAMA_TIMEOUT seconds (hard wall-clock cap)
+      - Model returns malformed JSON
+      - HTTP error status from Ollama
+    """
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
@@ -141,8 +154,19 @@ def _call_ollama(prompt: str) -> Optional[dict]:
         resp.raise_for_status()
         raw = resp.json().get("response", "")
         return json.loads(raw)
+    except requests.exceptions.Timeout:
+        logger.warning(
+            "Ollama timed out after %ds (model=%s) — activating fallback engine.",
+            OLLAMA_TIMEOUT, OLLAMA_MODEL,
+        )
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.warning(
+            "Ollama not reachable at %s — activating fallback engine.", OLLAMA_URL
+        )
+        return None
     except (requests.RequestException, json.JSONDecodeError, KeyError) as exc:
-        logger.debug("Ollama call failed: %s", exc)
+        logger.warning("Ollama call failed (%s) — activating fallback engine.", exc)
         return None
 
 

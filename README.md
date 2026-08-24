@@ -80,7 +80,12 @@ ollama pull llama3      # or phi3, mistral, etc.
 ollama serve            # starts the local API on localhost:11434
 ```
 
-> **Note:** Ollama is optional. If it is not running, Intent-Store uses a rich rule-augmented fallback that still considers semantic similarity, recurring patterns, file size, and recency — not just age.
+> **Note — Ollama is optional and the fallback is an intentional resilience feature.**
+> The default model is `qwen2.5:0.5b` (~400 MB, runs on CPU-only hardware such as a Ryzen 3 / integrated GPU).
+> A hard **7-second timeout** is enforced on every call; if Ollama is unavailable, slow, or exceeds that window,
+> Intent-Store automatically activates its built-in multi-signal fallback engine — which considers semantic
+> similarity, recurring file patterns, size, and recency — and produces a justified recommendation without
+> any LLM involvement. The tool **always** completes, even with Ollama stopped.
 
 ### 3. Run the full demo end-to-end
 
