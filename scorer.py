@@ -1,137 +1,142 @@
 """
-scorer.py — Computes a decay-based importance score and a recurring-pattern
-heuristic for each file.
+scorer.py — Importance scoring engine.
 
-Scoring model
-─────────────
-1. Recency/frequency decay  (0–1, higher = more recently accessed)
-   decay = exp(-λ · days_since_last_access)
-   λ = ln(2) / HALF_LIFE_DAYS   →  a file loses half its "freshness" every
-   HALF_LIFE_DAYS days without being accessed.
+Computes a final `importance_score` for each file based on:
+1. Recency Decay (exponential decay based on last access time).
+2. Recurring Pattern Bonus (detects date-suffixed files in the same family).
+3. Semantic Similarity (cosine similarity against a high-importance reference centroid).
 
-2. Recurring-pattern bonus  (0–1)
-   Files whose stem matches a date-suffixed pattern like:
-     invoice_2023.pdf, invoice_2024.pdf, invoice_2025.pdf
-   are detected by stripping trailing 4-digit years/numbers and clustering
-   stems.  Files that belong to a pattern family with ≥ MIN_PATTERN_FAMILY
-   members get a bonus (recurring = True).  This signals "this file is part
-   of a periodic workflow" independent of its recency.
-
-3. Final importance_score = recency_decay · (1 + PATTERN_BONUS · recurring)
-   Clamped to [0, 1].
-
-   Interpretation:
-   • High score  → file is recent OR part of a recurring pattern → lean Keep
-   • Low score   → old AND not part of any recognized pattern → candidate
-                    for archival / compression
+The final score is clamped between [0.0, 1.0].
 """
 
 import math
 import re
-import sqlite3
 import time
 import logging
-from pathlib import Path
-from typing import Dict, List, Tuple
+from collections import defaultdict
+from typing import Dict
+import numpy as np
 
 from scanner import get_connection, DB_PATH
+from profiler import deserialize
 
 logger = logging.getLogger(__name__)
 
-# ── tuneable constants ────────────────────────────────────────────────────────
-HALF_LIFE_DAYS       = 90          # recency half-life in days
-PATTERN_BONUS        = 0.35        # additive importance boost for recurring files
-MIN_PATTERN_FAMILY   = 2           # minimum family size to count as "recurring"
-# Pattern: stem ends with 4-digit year, 2-digit month/day combo, or ordinal num
-_DATE_SUFFIX_RE = re.compile(
-    r"[-_\s]?(\d{4}|\d{2}[-_]\d{2}|\d{1,3})$"
-)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── constants ─────────────────────────────────────────────────────────────────
+
+HALF_LIFE_DAYS = 90
+PATTERN_BONUS = 0.35
+SIMILARITY_BONUS = 0.40
+MIN_PATTERN_FAMILY = 2
+
+# Matches date/number suffixes like _2024, -12-05, _v2, etc.
+_DATE_SUFFIX_RE = re.compile(r"[-_\s]?(\d{4}|\d{2}[-_]\d{2}|\d{1,3})$")
+
+# High-importance reference phrases to compute the semantic centroid
+_IMPORTANCE_PHRASES = [
+    "legal contract agreement formal binding",
+    "tax return financial record statement invoice receipt",
+    "medical report health record prescription",
+    "official certificate credential passport identity",
+]
+
+_importance_centroid = None
 
 
-def _recency_decay(atime: float, now: float | None = None) -> float:
-    """Exponential decay on days since last access."""
-    now = now or time.time()
-    days = max((now - atime) / 86400.0, 0.0)
-    lam = math.log(2) / HALF_LIFE_DAYS
-    return math.exp(-lam * days)
+def _get_importance_centroid() -> np.ndarray:
+    """Computes and caches the reference embedding centroid."""
+    global _importance_centroid
+    if _importance_centroid is not None:
+        return _importance_centroid
+    
+    try:
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        vecs = model.encode(_IMPORTANCE_PHRASES)
+        _importance_centroid = vecs.mean(axis=0)
+        return _importance_centroid
+    except Exception as exc:
+        logger.error("Could not compute importance centroid: %s", exc)
+        # Fallback to a zero vector if something is fatally wrong, though profiler
+        # should have caught model load errors.
+        return np.zeros(384, dtype=np.float32)
 
 
-def _pattern_key(path: str) -> str:
-    """
-    Strip trailing date/number suffixes from the file stem to produce a
-    canonical pattern key used for family grouping.
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-    Examples:
-      invoice_2024.pdf → 'invoice'
-      report_jan_03.txt → 'report_jan'
-      notes.md → 'notes'
-    """
-    stem = Path(path).stem
-    return _DATE_SUFFIX_RE.sub("", stem).lower().rstrip("-_ ")
+def _days_ago(ts: float) -> float:
+    return max(0.0, (time.time() - ts) / 86400.0)
 
 
-def _detect_recurring(
-    rows: List[sqlite3.Row],
-) -> Dict[str, bool]:
-    """
-    Build a map of path → is_recurring.
+def _get_stem_pattern(filename: str) -> str:
+    """Strip date/number suffixes to find the base 'family' name."""
+    import os
+    base = os.path.splitext(filename)[0]
+    return _DATE_SUFFIX_RE.sub("", base).strip().lower()
 
-    Two files are in the same family when they share the same *parent directory*
-    AND the same *pattern key*.  This avoids false positives across unrelated
-    directories.
-    """
-    # Group by (parent_dir, pattern_key)
-    families: Dict[Tuple[str, str], List[str]] = {}
-    for row in rows:
-        p = row["path"]
-        key = (_pattern_key(p), str(Path(p).parent))
-        families.setdefault(key, []).append(p)
 
-    recurring: Dict[str, bool] = {}
-    for members in families.values():
-        is_rec = len(members) >= MIN_PATTERN_FAMILY
-        for m in members:
-            recurring[m] = is_rec
+def _cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
+    if vec1 is None or vec2 is None:
+        return 0.0
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return float(np.dot(vec1, vec2) / (norm1 * norm2))
 
-    return recurring
 
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def score_all(db_path: str = DB_PATH) -> int:
-    """
-    Compute and persist importance_score for every file in the database.
-
-    Returns the number of rows updated.
-    """
     conn = get_connection(db_path)
-    cursor = conn.cursor()
-
-    rows = cursor.execute(
-        "SELECT path, atime, mtime, importance_score FROM files"
-    ).fetchall()
-
+    rows = conn.execute("SELECT path, atime, embedding FROM files").fetchall()
+    
     if not rows:
         logger.info("No files to score.")
         conn.close()
         return 0
 
-    now = time.time()
-    recurring_map = _detect_recurring(rows)
+    # 1. Detect recurring pattern families
+    family_counts: Dict[str, int] = defaultdict(int)
+    for r in rows:
+        import os
+        fname = os.path.basename(r["path"])
+        family_counts[_get_stem_pattern(fname)] += 1
 
-    updates: List[Tuple[float, str]] = []
-    for row in rows:
-        decay   = _recency_decay(row["atime"], now)
-        is_rec  = recurring_map.get(row["path"], False)
-        score   = decay * (1.0 + PATTERN_BONUS * float(is_rec))
-        score   = min(score, 1.0)
-        updates.append((round(score, 6), row["path"]))
+    # 2. Compute similarity centroid
+    centroid = _get_importance_centroid()
 
-    cursor.executemany(
-        "UPDATE files SET importance_score = ? WHERE path = ?",
-        updates,
-    )
+    scored = 0
+    for r in rows:
+        path = r["path"]
+        fname = os.path.basename(path)
+        
+        # Base Recency Score
+        days_accessed = _days_ago(r["atime"])
+        recency_score = math.exp(-math.log(2) / HALF_LIFE_DAYS * days_accessed)
+        
+        # Pattern Bonus
+        family = _get_stem_pattern(fname)
+        is_recurring = family_counts[family] >= MIN_PATTERN_FAMILY
+        pattern_bonus = PATTERN_BONUS if is_recurring else 0.0
+        
+        # Semantic Similarity Bonus
+        vec = deserialize(r["embedding"])
+        sim_score = _cosine_similarity(vec, centroid) if vec is not None else 0.0
+        
+        # We map similarity (which can be [-1, 1], but usually [0, 1] for embeddings)
+        # to a bonus. If sim_score > 0.3, it starts contributing meaningfully.
+        sim_bonus = max(0.0, sim_score - 0.2) * SIMILARITY_BONUS
+        
+        final_score = min(1.0, recency_score + pattern_bonus + sim_bonus)
+        
+        conn.execute(
+            "UPDATE files SET importance_score = ? WHERE path = ?",
+            (final_score, path)
+        )
+        scored += 1
+
     conn.commit()
     conn.close()
-
-    logger.info("Scored %d files.", len(updates))
-    return len(updates)
+    logger.info("Scored %d files.", scored)
+    return scored

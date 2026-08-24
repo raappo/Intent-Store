@@ -1,35 +1,6 @@
-INVOICE NUMBER: INV-2025-0012
-DATE: February 8, 2025
-DUE DATE: March 8, 2025
+Acme Corp
+Tax Invoice & Formal Legal Contract
+Date: 2025-07-25
 
-VENDOR: CloudHost Solutions Ltd.
-123 Server Farm Way
-Dublin, Ireland
-
-BILL TO:
-Acme Corp Engineering
-Attn: Accounts Payable
-456 Tech Avenue
-San Francisco, CA 94107
-
-─────────────────────────────────────────────────────────────────────
-DESCRIPTION                          QTY    UNIT PRICE    TOTAL
-─────────────────────────────────────────────────────────────────────
-Premium Cloud Storage (1 TB/mo)        1     $94.99      $94.99
-CDN Bandwidth Overage (820 GB)         1     $73.80      $73.80
-Dedicated Support SLA (monthly)        1    $120.00     $120.00
-Security Audit Add-on (Q1 2025)        1    $250.00     $250.00
-─────────────────────────────────────────────────────────────────────
-                                              SUBTOTAL:  $538.79
-                                              TAX (8%):   $43.10
-                                                 TOTAL:  $581.89
-─────────────────────────────────────────────────────────────────────
-
-PAYMENT TERMS: Net 30
-PAYMENT METHOD: ACH Transfer
-BANK: Silicon Valley Bank
-ROUTING: 121140399
-ACCOUNT: 7284910033
-
-This invoice constitutes an official financial record. Please retain
-for tax and audit purposes. Contact billing@cloudhost.io for disputes.
+Total Due: $650.00
+This is a binding financial record and legal agreement.

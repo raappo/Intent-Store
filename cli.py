@@ -10,53 +10,33 @@ Commands
   reject <path>         Reject a recommendation (suppresses and penalises score).
 """
 
-import logging
-import sys
-from pathlib import Path
-
+import time
 import click
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
-from rich import box
 
-from scanner import get_connection, scan_directory, DB_PATH
+from scanner import get_connection, DB_PATH, scan_directory
 from profiler import embed_all
 from scorer import score_all
 from reasoner import reason_all
 
 console = Console()
-
-# Feedback-loop weight applied on accept / reject
-ACCEPT_BOOST  =  0.15
-REJECT_PENALTY = 0.15
-
-ACTION_STYLES = {
-    "archive":  ("red",    "📦"),
-    "compress": ("yellow", "🗜️"),
-    "keep":     ("green",  "✅"),
-}
-
-
-def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        format="%(levelname)s %(name)s: %(message)s",
-        level=level,
-    )
-
+REJECT_PENALTY = 0.20
+ACCEPT_BOOST = 0.15
 
 @click.group()
-@click.option("--db", default=DB_PATH, show_default=True, help="Path to SQLite database.")
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
+@click.option("--db", "db_path", default=DB_PATH, help="Path to SQLite database.")
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.pass_context
-def cli(ctx: click.Context, db: str, verbose: bool) -> None:
-    """Intent-Store — Semantic storage intelligence for Linux."""
+def cli(ctx: click.Context, db_path: str, verbose: bool) -> None:
     ctx.ensure_object(dict)
-    ctx.obj["db"] = db
-    _setup_logging(verbose)
+    ctx.obj["db"] = db_path
 
+    import logging
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
 
-# ── scan ─────────────────────────────────────────────────────────────────────
 
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False, resolve_path=True))
@@ -90,8 +70,6 @@ def scan(ctx: click.Context, directory: str, skip_embed: bool, skip_reason: bool
     )
 
 
-# ── rescore ───────────────────────────────────────────────────────────────────
-
 @cli.command()
 @click.option("--force", is_flag=True, help="Re-reason files that already have a recommendation.")
 @click.pass_context
@@ -115,11 +93,9 @@ def rescore(ctx: click.Context, force: bool) -> None:
     )
 
 
-# ── report ────────────────────────────────────────────────────────────────────
-
 @cli.command()
 @click.option("--all", "show_all", is_flag=True, help="Show all files, not just recommendations.")
-@click.option("--limit", default=50, show_default=True, help="Max rows to display.")
+@click.option("--limit", default=20, help="Max rows to show.")
 @click.pass_context
 def report(ctx: click.Context, show_all: bool, limit: int) -> None:
     """Display the current recommendation table."""
@@ -133,8 +109,6 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
             (limit,),
         ).fetchall()
     else:
-        # Default: show all files with recommendations, sorted lowest-score first
-        # (most likely archival candidates at the top)
         rows = conn.execute(
             """
             SELECT path, size, atime, mtime, importance_score, action, justification, status
@@ -147,32 +121,37 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
             (limit,),
         ).fetchall()
 
-    conn.close()
-
     if not rows:
         console.print("[yellow]No recommendations yet. Run [cyan]intent-store scan <dir>[/cyan] first.[/yellow]")
+        conn.close()
         return
 
-    import time as _time
-
-    table = Table(
-        title="[bold]Intent-Store Recommendations[/bold]",
-        box=box.ROUNDED,
-        show_lines=True,
-        highlight=True,
-    )
-    table.add_column("File", style="cyan", max_width=36, no_wrap=False)
-    table.add_column("Size", justify="right", style="magenta")
-    table.add_column("Last Access", justify="center")
+    table = Table(title="Intent-Store Recommendations", show_lines=True)
+    table.add_column("File", style="cyan", no_wrap=True)
+    table.add_column("Size", justify="right")
+    table.add_column("Last Access", justify="right")
     table.add_column("Score", justify="right")
     table.add_column("Action", justify="center")
     table.add_column("Status", justify="center")
     table.add_column("Justification", max_width=65, no_wrap=False)
 
+    def _fmt_size(size_bytes: int) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} PB"
+
+    ACTION_STYLES = {
+        "archive": ("red", "📦"),
+        "keep": ("green", "✅"),
+        "compress": ("yellow", "🗜️"),
+    }
+
     for row in rows:
         filename   = Path(row["path"]).name
         size_hr    = _fmt_size(row["size"])
-        days_ago   = (_time.time() - row["atime"]) / 86400
+        days_ago   = max(0.0, (time.time() - row["atime"]) / 86400.0)
         access_str = f"{days_ago:.0f}d ago"
         score      = f"{row['importance_score']:.3f}"
         action     = row["action"] or "—"
@@ -192,7 +171,6 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
 
     console.print(table)
 
-    # Count files not shown (above threshold, no recommendation)
     conn2 = get_connection(db_path=db)
     total = conn2.execute("SELECT COUNT(*) FROM files").fetchone()[0]
     conn2.close()
@@ -209,8 +187,6 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
     )
 
 
-# ── accept ────────────────────────────────────────────────────────────────────
-
 @cli.command()
 @click.argument("path", type=click.Path())
 @click.pass_context
@@ -224,7 +200,7 @@ def accept(ctx: click.Context, path: str) -> None:
     if row is None:
         console.print(f"[red]Path not found in database:[/red] {resolved}")
         conn.close()
-        sys.exit(1)
+        import sys; sys.exit(1)
 
     new_score = min(row["importance_score"] + ACCEPT_BOOST, 1.0)
     conn.execute(
@@ -239,8 +215,6 @@ def accept(ctx: click.Context, path: str) -> None:
     )
 
 
-# ── reject ────────────────────────────────────────────────────────────────────
-
 @cli.command()
 @click.argument("path", type=click.Path())
 @click.pass_context
@@ -254,7 +228,7 @@ def reject(ctx: click.Context, path: str) -> None:
     if row is None:
         console.print(f"[red]Path not found in database:[/red] {resolved}")
         conn.close()
-        sys.exit(1)
+        import sys; sys.exit(1)
 
     new_score = max(row["importance_score"] - REJECT_PENALTY, 0.0)
     conn.execute(
@@ -270,18 +244,6 @@ def reject(ctx: click.Context, path: str) -> None:
         "Recommendation cleared."
     )
 
-
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-def _fmt_size(size_bytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
-
-
-# ── entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     cli(obj={})

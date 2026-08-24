@@ -5,9 +5,9 @@ reasoner.py — Calls a local LLM via Ollama to produce JSON recommendations
 Candidacy criteria
 ──────────────────
 A file is a candidate when:
-  importance_score < CANDIDATE_THRESHOLD  (low recency/frequency signal)
-
-  OR the file already has a non-rejected recommendation that needs refresh
+  importance_score < CANDIDATE_THRESHOLD
+  AND action IS NULL (meaning no recommendation exists yet)
+  AND status NOT IN ('accepted', 'rejected')
 
 The LLM prompt includes:
   • filename and extension
@@ -15,52 +15,37 @@ The LLM prompt includes:
   • days since last access
   • days since last modification
   • the numeric importance_score
-  • whether it belongs to a recurring pattern family (derived from score > raw
-    decay, i.e. the pattern bonus contributed)
   • first ~500 chars of readable content (if text)
 
 The LLM is expected to return valid JSON:
   {"action": "archive|keep|compress", "justification": "..."}
 
 If Ollama is unavailable, a rule-augmented fallback kicks in that still
-produces a richer justification than "file not opened in N days" by
-incorporating the semantic embedding similarity to an "important document"
-centroid and the recurring-pattern signal.
+produces a richer justification than "file not opened in N days".
 """
 
 import json
 import logging
 import math
-import pickle
+import requests
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
 
-import requests
-import numpy as np
-
-from scanner import get_connection, is_likely_text, DB_PATH
-from scorer import HALF_LIFE_DAYS
+from scanner import get_connection, DB_PATH, is_likely_text
+from profiler import deserialize
+from scorer import HALF_LIFE_DAYS, _get_importance_centroid, _cosine_similarity
 
 logger = logging.getLogger(__name__)
 
 # ── Ollama settings ──────────────────────────────────────────────────────────
 OLLAMA_URL      = "http://localhost:11434/api/generate"
-# qwen2.5:0.5b fits comfortably in ~400 MB RAM and runs on CPU-only hardware
-# (e.g. Ryzen 3 3250U / integrated GPU). Swap for a larger model if you have
-# a discrete GPU or more VRAM — e.g. qwen2.5:3b, llama3.2:1b, phi3:mini.
 OLLAMA_MODEL    = "qwen2.5:0.5b"
-# Hard 7-second wall-clock timeout per Ollama call.  If the model hasn't
-# responded within that window (slow CPU, model not yet loaded, service down)
-# the call returns None and the rich multi-signal fallback engine takes over.
-OLLAMA_TIMEOUT  = 7                 # seconds — sized for a 2-core laptop CPU
+OLLAMA_TIMEOUT  = 7
 
-# ── Candidacy threshold ──────────────────────────────────────────────────────
-CANDIDATE_THRESHOLD = 0.45          # files below this score are evaluated
-
-# ── Content peek for LLM prompt ─────────────────────────────────────────────
-CONTENT_PEEK = 500                  # chars
+CANDIDATE_THRESHOLD = 0.45
+CONTENT_PEEK = 500
 
 
 def _human_size(size_bytes: int) -> str:
@@ -72,77 +57,21 @@ def _human_size(size_bytes: int) -> str:
 
 
 def _days_ago(ts: float) -> float:
-    return max((time.time() - ts) / 86400.0, 0.0)
+    return max(0.0, (time.time() - ts) / 86400.0)
 
 
 def _read_snippet(path: str) -> str:
-    """Return up to CONTENT_PEEK chars of text content, or empty string."""
     if not is_likely_text(path):
         return ""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read(CONTENT_PEEK)
     except OSError:
         return ""
 
 
-def _deserialize_embedding(blob: Optional[bytes]) -> Optional[np.ndarray]:
-    if blob is None:
-        return None
-    try:
-        return pickle.loads(blob)
-    except Exception:
-        return None
-
-
-def _embedding_similarity(vec_a: Optional[np.ndarray], vec_b: Optional[np.ndarray]) -> float:
-    """Cosine similarity, returns 0.0 if either vector is None."""
-    if vec_a is None or vec_b is None:
-        return 0.0
-    denom = (np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
-    if denom == 0.0:
-        return 0.0
-    return float(np.dot(vec_a, vec_b) / denom)
-
-
-# A hand-crafted "important document" centroid phrase whose embedding will be
-# compared against each file's embedding to detect semantically significant files.
-_IMPORTANCE_PHRASES = [
-    "legal contract agreement",
-    "tax return financial record",
-    "medical report health record",
-    "official certificate credential",
-    "invoice receipt payment",
-    "personal identification document",
-]
-
-_importance_centroid: Optional[np.ndarray] = None
-
-
-def _get_importance_centroid() -> Optional[np.ndarray]:
-    global _importance_centroid
-    if _importance_centroid is not None:
-        return _importance_centroid
-    try:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        vecs = model.encode(_IMPORTANCE_PHRASES)
-        _importance_centroid = vecs.mean(axis=0)
-        return _importance_centroid
-    except Exception as exc:
-        logger.warning("Could not compute importance centroid: %s", exc)
-        return None
-
-
 def _call_ollama(prompt: str) -> Optional[dict]:
-    """POST to Ollama and return the parsed JSON response, or None on any failure.
-
-    Failure modes that all return None (triggering the fallback engine):
-      - Ollama not running / connection refused
-      - Response exceeds OLLAMA_TIMEOUT seconds (hard wall-clock cap)
-      - Model returns malformed JSON
-      - HTTP error status from Ollama
-    """
+    """POST to Ollama and return the parsed JSON response, or None on any failure."""
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
@@ -176,12 +105,6 @@ def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float) -> str:
     score          = row["importance_score"]
     size_hr        = _human_size(row["size"])
     filename       = Path(row["path"]).name
-    extension      = Path(row["path"]).suffix.lower()
-
-    # Derive whether the pattern bonus was active:
-    # if score > raw_decay it means the pattern bonus contributed.
-    raw_decay_approx = math.exp(-math.log(2) / HALF_LIFE_DAYS * days_accessed)
-    pattern_bonus_active = score > (raw_decay_approx * 1.05)  # 5% headroom
 
     content_section = (
         f"\nContent preview (first {CONTENT_PEEK} chars):\n```\n{snippet}\n```"
@@ -192,38 +115,23 @@ def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float) -> str:
 Analyze this file and decide what to do with it. You must return ONLY valid JSON.
 
 === FILE METADATA ===
-Filename       : {filename}
-Extension      : {extension or 'none'}
-Size           : {size_hr}
-Last accessed  : {days_accessed:.1f} days ago
-Last modified  : {days_modified:.1f} days ago
-Importance score: {score:.3f}  (0 = stale/irrelevant, 1 = critical/active)
-Semantic similarity to important-document types: {sim_score:.3f}  (0–1)
-Part of a recurring periodic pattern (e.g. yearly invoices): {pattern_bonus_active}
+Filename: {filename}
+Size: {size_hr}
+Last Accessed: {days_accessed:.0f} days ago
+Last Modified: {days_modified:.0f} days ago
+Internal Importance Score: {score:.3f} (0=delete, 1=keep)
+Semantic Similarity to Important Documents: {sim_score:.3f} (higher is more important)
 {content_section}
 
-=== TASK ===
-Based on the metadata AND content semantics above, choose ONE action:
-  - "archive"  : move to cold storage; file is old, unlikely to be needed soon
-  - "compress" : keep accessible but compress; moderate recency, large size
-  - "keep"     : retain as-is; file is important, active, or semantically critical
-
-Return ONLY a JSON object with exactly these two keys:
-  "action"        : one of "archive", "compress", or "keep"
-  "justification" : 1-3 sentences explaining your reasoning. Reference specific
-                    signals (size, last-access gap, content type, pattern) — do
-                    NOT just say "file not opened in N days".
-
-Example output format:
-{{"action": "archive", "justification": "This appears to be an old project log from 2022 with no access in 180 days and no recurring-pattern signal. Its content shows debugging output with no personally-identifying or financial data, suggesting it is safe to move to cold storage."}}"""
+Based on this, what is your recommendation?
+Provide a brief justification.
+Respond in exactly this JSON format:
+{{"action": "archive" | "keep" | "compress", "justification": "<your short reasoning>"}}
+"""
 
 
 def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
-    """
-    Rule-augmented fallback when Ollama is unavailable.
-    Incorporates recency, size, semantic similarity and recurring-pattern
-    signal to produce a richer justification than a plain age cutoff.
-    """
+    """Rule-augmented fallback when Ollama is unavailable."""
     days_accessed = _days_ago(row["atime"])
     score         = row["importance_score"]
     size_bytes    = row["size"]
@@ -233,70 +141,35 @@ def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
     pattern_active = score > raw_decay * 1.05
 
     signals = []
-
-    # Semantic importance check
-    if sim_score > 0.55:
-        signals.append(
-            f"its filename/content is semantically similar to important document types "
-            f"(similarity={sim_score:.2f}), suggesting it may be a financial, legal, "
-            f"or credential-bearing file"
-        )
-    elif sim_score < 0.25:
-        signals.append(
-            f"its content bears little resemblance to any high-importance document "
-            f"category (similarity={sim_score:.2f})"
-        )
-
-    # Recency context
-    if days_accessed < 14:
-        signals.append(f"it was accessed only {days_accessed:.0f} days ago (recently active)")
-    elif days_accessed < 90:
-        signals.append(f"it was last accessed {days_accessed:.0f} days ago (moderate staleness)")
+    
+    if sim_score > 0.3:
+        signals.append(f"its content has semantic similarity to important document categories (similarity={sim_score:.2f})")
     else:
-        signals.append(f"it has not been accessed in {days_accessed:.0f} days")
-
-    # Recurring pattern
+        signals.append(f"its content bears little resemblance to high-importance document categories (similarity={sim_score:.2f})")
+        
     if pattern_active:
-        signals.append(
-            "it belongs to a recurring file pattern (e.g. date-suffixed filename series), "
-            "indicating periodic reuse even if currently dormant"
-        )
-
-    # Size context
-    if size_bytes > 50 * 1024 * 1024:
-        signals.append(f"it is large ({_human_size(size_bytes)}), making compression impactful")
-    elif size_bytes < 4096:
+        signals.append("it belongs to a recurring file pattern series, indicating periodic reuse even if currently dormant")
+        
+    if size_bytes < 1024 * 100: # 100KB
         signals.append(f"it is very small ({_human_size(size_bytes)}), so storage impact is minimal")
+    elif size_bytes > 1024 * 1024 * 100: # 100MB
+        signals.append(f"it is very large ({_human_size(size_bytes)}) and consuming significant space")
 
-    justification = (
-        f"Evaluated '{filename}' using recency decay (score={score:.3f}), "
-        f"semantic similarity, size, and pattern analysis: "
-        + "; ".join(signals) + "."
-    )
+    signals.append(f"it has not been accessed in {days_accessed:.0f} days")
 
-    # Decision logic
-    if sim_score > 0.55 or pattern_active:
-        action = "keep"
-    elif days_accessed > 180 and size_bytes > 10 * 1024:
+    action = "archive" if score < 0.2 else "keep"
+    
+    # Force archive if it's huge and unaccessed
+    if size_bytes > 1024 * 1024 * 100 and days_accessed > 180:
         action = "archive"
-    elif size_bytes > 20 * 1024 * 1024 and days_accessed > 30:
-        action = "compress"
-    else:
-        action = "archive" if score < 0.2 else "keep"
+
+    justification = f"Evaluated '{filename}' using recency decay (score={score:.3f}), semantic similarity, size, and pattern analysis: "
+    justification += "; ".join(signals) + "."
 
     return {"action": action, "justification": justification}
 
 
 def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
-    """
-    Generate recommendations for all candidate files.
-
-    Parameters
-    ----------
-    force : Re-generate even for files that already have a recommendation.
-
-    Returns the number of files processed.
-    """
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -325,21 +198,19 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
 
     for row in rows:
         path    = row["path"]
-        emb_vec = _deserialize_embedding(row["embedding"])
-        sim     = _embedding_similarity(emb_vec, centroid)
+        emb_vec = deserialize(row["embedding"])
+        sim     = _cosine_similarity(emb_vec, centroid)
         snippet = _read_snippet(path)
 
         prompt = _build_prompt(row, snippet, sim)
         result = _call_ollama(prompt)
 
         if result is None:
-            logger.debug("Ollama unavailable for %s; using fallback.", path)
             result = _fallback_recommend(row, sim)
 
         action        = result.get("action", "keep")
         justification = result.get("justification", "")
 
-        # Validate action value
         if action not in ("archive", "keep", "compress"):
             action = "keep"
 

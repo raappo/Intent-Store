@@ -1,7 +1,18 @@
 """
-scanner.py — Directory walker that records file metadata into SQLite.
+scanner.py — Directory walker.
 
-Schema: files(path, size, atime, mtime, embedding, importance_score, status)
+Walks a target directory and upserts every file's metadata into SQLite.
+
+Schema (files table):
+    path             TEXT  PRIMARY KEY
+    size             INTEGER          bytes
+    atime            REAL             Unix timestamp, last access
+    mtime            REAL             Unix timestamp, last modification
+    embedding        BLOB             serialised numpy float32 vector (set by profiler)
+    importance_score REAL  DEFAULT 0.5
+    status           TEXT  DEFAULT 'pending'
+    action           TEXT             'archive' | 'keep' | 'compress' | NULL
+    justification    TEXT
 """
 
 import os
@@ -13,87 +24,91 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "intent_store.db"
 
-SCHEMA_SQL = """
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
-    path              TEXT PRIMARY KEY,
-    size              INTEGER,
-    atime             REAL,
-    mtime             REAL,
-    embedding         BLOB,
-    importance_score  REAL DEFAULT 0.5,
-    status            TEXT DEFAULT 'pending',
-    justification     TEXT,
-    action            TEXT
+    path             TEXT PRIMARY KEY,
+    size             INTEGER,
+    atime            REAL,
+    mtime            REAL,
+    embedding        BLOB,
+    importance_score REAL DEFAULT 0.5,
+    status           TEXT DEFAULT 'pending',
+    action           TEXT,
+    justification    TEXT
 );
 """
 
 
+# ── public helpers ────────────────────────────────────────────────────────────
+
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
-    """Open (or create) the SQLite database and ensure the schema exists."""
+    """Return an open, schema-initialised SQLite connection."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute(SCHEMA_SQL)
+    conn.execute(_SCHEMA)
     conn.commit()
     return conn
 
 
-def is_likely_text(path: str, sample_bytes: int = 512) -> bool:
-    """Heuristic: a file is text if it contains no null bytes in its first chunk."""
+def is_likely_text(path: str, sample: int = 512) -> bool:
+    """Return True if the file looks like UTF-8 / ASCII text (no null bytes)."""
     try:
         with open(path, "rb") as fh:
-            chunk = fh.read(sample_bytes)
-        return b"\x00" not in chunk
+            return b"\x00" not in fh.read(sample)
     except OSError:
         return False
 
 
+# ── main entry point ──────────────────────────────────────────────────────────
+
 def scan_directory(target_dir: str, db_path: str = DB_PATH) -> int:
     """
-    Walk *target_dir* recursively and upsert every file's metadata into SQLite.
+    Walk *target_dir* and upsert file metadata into the database.
+
+    On conflict (path already exists):
+      - size / atime / mtime are always refreshed for new files.
+      - atime / mtime are preserved once an embedding exists, so that a
+        re-scan after the profiler has opened the files does not overwrite
+        the historically accurate timestamps with "just now".
 
     Returns the number of files recorded.
     """
-    target = Path(target_dir).resolve()
-    if not target.is_dir():
-        raise ValueError(f"Target is not a directory: {target}")
+    root = Path(target_dir).resolve()
+    if not root.is_dir():
+        raise ValueError(f"Not a directory: {root}")
 
     conn = get_connection(db_path)
-    cursor = conn.cursor()
+    cur = conn.cursor()
     count = 0
 
-    for dirpath, _dirnames, filenames in os.walk(target):
+    for dirpath, _dirs, filenames in os.walk(root):
         for fname in filenames:
             fpath = os.path.join(dirpath, fname)
             try:
-                stat = os.stat(fpath)
+                st = os.stat(fpath)
             except OSError as exc:
                 logger.warning("Cannot stat %s: %s", fpath, exc)
                 continue
 
-            # Preserve atime/mtime once a file has been embedded: the profiler
-            # opens each file for reading which resets the OS atime, so we must
-            # protect historically accurate timestamps from being silently
-            # overwritten on every subsequent re-scan.
-            cursor.execute(
+            # Preserve timestamps once embedding exists (profiler opens files,
+            # which resets OS atime; we don't want that to pollute history).
+            cur.execute(
                 """
                 INSERT INTO files (path, size, atime, mtime)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     size  = excluded.size,
-                    atime = CASE WHEN files.embedding IS NULL THEN excluded.atime ELSE files.atime END,
-                    mtime = CASE WHEN files.embedding IS NULL THEN excluded.mtime ELSE files.mtime END
+                    atime = CASE WHEN files.embedding IS NULL
+                                 THEN excluded.atime ELSE files.atime END,
+                    mtime = CASE WHEN files.embedding IS NULL
+                                 THEN excluded.mtime ELSE files.mtime END
                 """,
-                (
-                    str(fpath),
-                    stat.st_size,
-                    stat.st_atime,
-                    stat.st_mtime,
-                ),
+                (str(fpath), st.st_size, st.st_atime, st.st_mtime),
             )
             count += 1
-            logger.debug("Recorded: %s", fpath)
+            logger.debug("Indexed: %s", fpath)
 
     conn.commit()
     conn.close()
-    logger.info("Scanned %d files from %s", count, target)
+    logger.info("Indexed %d files from %s", count, root)
     return count
