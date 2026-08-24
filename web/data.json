@@ -1,0 +1,62 @@
+[
+  {
+    "file": "random_meeting_notes_2020.txt",
+    "size": 195,
+    "last_access": "1800 days ago",
+    "score": 9.534985741730076e-07,
+    "action": "archive",
+    "status": "rejected",
+    "justification": "Looking at random_meeting_notes_2020.txt, I noticed its content bears little resemblance to high-importance document categories (similarity=0.04) and it is very small (195.0 B), so storage impact is minimal and it has not been accessed in 1800 days. Given the lack of recent use and low importance, archiving is safe. (Adjusted based on prior user feedback: Rejected)",
+    "source": "RULE"
+  },
+  {
+    "file": "debug_crawler_2022.log",
+    "size": 203,
+    "last_access": "1500 days ago",
+    "score": 9.61066339780451e-06,
+    "action": "archive",
+    "status": "pending",
+    "justification": "This file, `debug_crawler_2022.log`, is a log file that contains informational and warning messages from a specific crawler running on a Linux workstation. Given its content, it is likely a daily or weekly report of crawl status for a particular site, which is a recurring and important document type.",
+    "source": "LLM"
+  },
+  {
+    "file": "project_alpha_notes_2021.md",
+    "size": 176,
+    "last_access": "900 days ago",
+    "score": 0.000976382539978391,
+    "action": "archive",
+    "status": "pending",
+    "justification": "This file is a short README with a brief overview of the project, which does not require further processing or archiving.",
+    "source": "LLM"
+  },
+  {
+    "file": "tax_return_2025.txt",
+    "size": 191,
+    "last_access": "320 days ago",
+    "score": 0.13680595808423562,
+    "action": "archive",
+    "status": "pending",
+    "justification": "The tax_return_2025.txt file is a detailed annual filing document, specifically addressing tax returns for Jane Doe from 2025, which suggests it is an important and frequently referenced document that requires careful retention and periodic review.",
+    "source": "LLM"
+  },
+  {
+    "file": "invoice_2024.txt",
+    "size": 139,
+    "last_access": "200 days ago",
+    "score": 0.6504241826007147,
+    "action": "keep",
+    "status": "pending",
+    "justification": "The file 'invoice_2024.txt' contains a formal legal contract and a tax invoice. These documents are commonly kept as they provide important financial and legal information.",
+    "source": "LLM"
+  },
+  {
+    "file": "invoice_2025.txt",
+    "size": 139,
+    "last_access": "30 days ago",
+    "score": 1.0,
+    "action": "keep",
+    "status": "pending",
+    "justification": "The file appears to be a business tax invoice, which is a typical type of financial document. The information provided is concise and relevant, and the action 'KEEP' aligns with the type and content of the file.",
+    "source": "LLM"
+  }
+]

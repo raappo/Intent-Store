@@ -281,5 +281,57 @@ def reject(ctx: click.Context, path: str) -> None:
     )
 
 
+@cli.command()
+@click.pass_context
+def export(ctx: click.Context) -> None:
+    """Export the recommendations table to web/data.json."""
+    import json
+    import os
+    
+    db = ctx.obj["db"]
+    conn = get_connection(db_path=db)
+
+    rows = conn.execute(
+        "SELECT path, size, atime, importance_score, action, justification, status "
+        "FROM files ORDER BY importance_score ASC"
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        filename = Path(row["path"]).name
+        size = row["size"]
+        days_ago = max(0.0, (time.time() - row["atime"]) / 86400.0)
+        score = row["importance_score"]
+        action = row["action"] or "—"
+        status = row["status"] or "pending"
+        just_raw = row["justification"] or ""
+        
+        source = "UNKNOWN"
+        if just_raw.startswith("[LLM]"):
+            source = "LLM"
+            just_raw = just_raw[5:].strip()
+        elif just_raw.startswith("[RULE]"):
+            source = "RULE"
+            just_raw = just_raw[6:].strip()
+
+        out.append({
+            "file": filename,
+            "size": size,
+            "last_access": f"{days_ago:.0f} days ago",
+            "score": score,
+            "action": action,
+            "status": status,
+            "justification": just_raw,
+            "source": source
+        })
+
+    os.makedirs("web", exist_ok=True)
+    with open("web/data.json", "w") as f:
+        json.dump(out, f, indent=2)
+    conn.close()
+
+    console.print(f"[green]✔[/green] Exported {len(out)} files to [bold]web/data.json[/bold]")
+
+
 if __name__ == "__main__":
     cli(obj={})
