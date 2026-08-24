@@ -1,0 +1,4 @@
+Weekly Standup - Week 2
+Completed: Authentication module MVP is done.
+Blocked: None.
+Next: Integrate the database schema.

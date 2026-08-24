@@ -1,0 +1,4 @@
+Weekly Standup - Week 3
+Completed: Database schema integrated successfully.
+Blocked: Need review on the PR for data migration.
+Next: Begin work on the user dashboard UI.

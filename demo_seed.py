@@ -22,6 +22,11 @@ def main():
         "tax_return_2025.txt": {"atime": now - 320*86400, "mtime": now - 320*86400},
         "tax_return_2024.txt": {"atime": now - 720*86400, "mtime": now - 720*86400},
         "random_meeting_notes_2020.txt": {"atime": now - 1800*86400, "mtime": now - 2000*86400},
+        "temp_build_cache.log": {"atime": now - 200*86400, "mtime": now - 200*86400},
+        "weekly_standup_w1.txt": {"atime": now - 400*86400, "mtime": now - 400*86400},
+        "weekly_standup_w2.txt": {"atime": now - 300*86400, "mtime": now - 300*86400},
+        "weekly_standup_w3.txt": {"atime": now - 200*86400, "mtime": now - 200*86400},
+        "old_journal_entry.txt": {"atime": now - 600*86400, "mtime": now - 600*86400},
     }
 
     count = 0

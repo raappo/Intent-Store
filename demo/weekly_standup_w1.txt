@@ -1,0 +1,4 @@
+Weekly Standup - Week 1
+Completed: Set up the initial repository structure.
+Blocked: Waiting on DevOps to provision the test environment.
+Next: Start working on the authentication module.
