@@ -190,6 +190,38 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
 @cli.command()
 @click.argument("path", type=click.Path())
 @click.pass_context
+def debug(ctx: click.Context, path: str) -> None:
+    """Print raw embedding length and similarity score for PATH."""
+    db = ctx.obj["db"]
+    conn = get_connection(db_path=db)
+    
+    resolved = str(Path(path).resolve())
+    row = conn.execute("SELECT embedding FROM files WHERE path = ?", (resolved,)).fetchone()
+    if row is None:
+        print(f"Path not found in database: {resolved}")
+        conn.close()
+        return
+
+    from profiler import deserialize
+    from scorer import _get_importance_centroid, _cosine_similarity
+    
+    vec = deserialize(row["embedding"])
+    centroid = _get_importance_centroid()
+    sim_score = _cosine_similarity(vec, centroid) if vec is not None else 0.0
+    
+    print(f"File path: {resolved}")
+    if vec is not None:
+        print(f"embedding length: {len(vec)}")
+    else:
+        print("embedding length: None")
+    print(f"raw similarity score: {sim_score}")
+    
+    conn.close()
+
+
+@cli.command()
+@click.argument("path", type=click.Path())
+@click.pass_context
 def accept(ctx: click.Context, path: str) -> None:
     """Accept the recommendation for PATH (boosts importance score)."""
     db = ctx.obj["db"]

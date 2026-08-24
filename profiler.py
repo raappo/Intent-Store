@@ -131,8 +131,9 @@ def embed_all(db_path: str = DB_PATH) -> int:
 
     if not rows:
         logger.info("No new files to embed.")
+        total = conn.execute("SELECT COUNT(*) FROM files WHERE embedding IS NOT NULL").fetchone()[0]
         conn.close()
-        return 0
+        return total
 
     paths = [r["path"] for r in rows]
     texts = [_build_text(p) for p in paths]
@@ -170,4 +171,5 @@ def embed_all(db_path: str = DB_PATH) -> int:
         "Embedded %d / %d file(s) successfully. Method: %s",
         embedded, len(paths), EMBEDDING_METHOD,
     )
-    return embedded
+    total = conn.execute("SELECT COUNT(*) FROM files WHERE embedding IS NOT NULL").fetchone()[0]
+    return total
