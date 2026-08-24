@@ -114,7 +114,6 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
             SELECT path, size, atime, mtime, importance_score, action, justification, status
             FROM files
             WHERE action IS NOT NULL
-              AND status != 'rejected'
             ORDER BY importance_score ASC
             LIMIT ?
             """,
@@ -228,16 +227,19 @@ def accept(ctx: click.Context, path: str) -> None:
     conn = get_connection(db_path=db)
 
     resolved = str(Path(path).resolve())
-    row = conn.execute("SELECT importance_score, action FROM files WHERE path = ?", (resolved,)).fetchone()
+    row = conn.execute("SELECT importance_score, action, justification FROM files WHERE path = ?", (resolved,)).fetchone()
     if row is None:
         console.print(f"[red]Path not found in database:[/red] {resolved}")
         conn.close()
         import sys; sys.exit(1)
 
     new_score = min(row["importance_score"] + ACCEPT_BOOST, 1.0)
+    old_just = row["justification"] or ""
+    new_just = f"{old_just} (Adjusted based on prior user feedback: Accepted)"
+    
     conn.execute(
-        "UPDATE files SET status = 'accepted', importance_score = ? WHERE path = ?",
-        (new_score, resolved),
+        "UPDATE files SET status = 'accepted', importance_score = ?, justification = ? WHERE path = ?",
+        (new_score, new_just, resolved),
     )
     conn.commit()
     conn.close()
@@ -256,17 +258,19 @@ def reject(ctx: click.Context, path: str) -> None:
     conn = get_connection(db_path=db)
 
     resolved = str(Path(path).resolve())
-    row = conn.execute("SELECT importance_score, action FROM files WHERE path = ?", (resolved,)).fetchone()
+    row = conn.execute("SELECT importance_score, action, justification FROM files WHERE path = ?", (resolved,)).fetchone()
     if row is None:
         console.print(f"[red]Path not found in database:[/red] {resolved}")
         conn.close()
         import sys; sys.exit(1)
 
     new_score = max(row["importance_score"] - REJECT_PENALTY, 0.0)
+    old_just = row["justification"] or ""
+    new_just = f"{old_just} (Adjusted based on prior user feedback: Rejected)"
+    
     conn.execute(
-        "UPDATE files SET status = 'rejected', importance_score = ?, "
-        "action = NULL, justification = NULL WHERE path = ?",
-        (new_score, resolved),
+        "UPDATE files SET status = 'rejected', importance_score = ?, justification = ? WHERE path = ?",
+        (new_score, new_just, resolved),
     )
     conn.commit()
     conn.close()
