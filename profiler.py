@@ -159,9 +159,8 @@ def embed_all(db_path: str = DB_PATH) -> int:
         embedded += 1
 
     conn.commit()
-    conn.close()
-
     if embedded == 0:
+        conn.close()
         raise RuntimeError(
             "Embedded 0 files — every embedding was a zero-vector. "
             "Cannot proceed to scorer.py."
@@ -172,4 +171,5 @@ def embed_all(db_path: str = DB_PATH) -> int:
         embedded, len(paths), EMBEDDING_METHOD,
     )
     total = conn.execute("SELECT COUNT(*) FROM files WHERE embedding IS NOT NULL").fetchone()[0]
+    conn.close()
     return total

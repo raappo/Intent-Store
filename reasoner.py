@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # ── Ollama settings ──────────────────────────────────────────────────────────
 OLLAMA_URL      = "http://localhost:11434/api/generate"
 OLLAMA_MODEL    = "qwen2.5:0.5b"
-OLLAMA_TIMEOUT  = 7
+OLLAMA_TIMEOUT  = 30
 
 CANDIDATE_THRESHOLD = 0.45
 CONTENT_PEEK = 500
@@ -78,23 +78,31 @@ def _call_ollama(prompt: str) -> Optional[dict]:
         "stream": False,
         "format": "json",
     }
+    
+    print(f"DEBUG _call_ollama: URL={OLLAMA_URL}, Timeout={OLLAMA_TIMEOUT}")
+    print(f"DEBUG _call_ollama: Payload={json.dumps(payload)}")
+    
+    import traceback
     try:
         resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT)
         resp.raise_for_status()
         raw = resp.json().get("response", "")
         return json.loads(raw)
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as exc:
+        traceback.print_exc()
         logger.warning(
             "Ollama timed out after %ds (model=%s) — activating fallback engine.",
             OLLAMA_TIMEOUT, OLLAMA_MODEL,
         )
         return None
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.ConnectionError as exc:
+        traceback.print_exc()
         logger.warning(
             "Ollama not reachable at %s — activating fallback engine.", OLLAMA_URL
         )
         return None
     except (requests.RequestException, json.JSONDecodeError, KeyError) as exc:
+        traceback.print_exc()
         logger.warning("Ollama call failed (%s) — activating fallback engine.", exc)
         return None
 
