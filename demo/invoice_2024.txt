@@ -1,0 +1,34 @@
+INVOICE NUMBER: INV-2024-0047
+DATE: March 15, 2024
+DUE DATE: April 15, 2024
+
+VENDOR: CloudHost Solutions Ltd.
+123 Server Farm Way
+Dublin, Ireland
+
+BILL TO:
+Acme Corp Engineering
+Attn: Accounts Payable
+456 Tech Avenue
+San Francisco, CA 94107
+
+─────────────────────────────────────────────────────────────────────
+DESCRIPTION                          QTY    UNIT PRICE    TOTAL
+─────────────────────────────────────────────────────────────────────
+Premium Cloud Storage (1 TB/mo)        1     $89.99      $89.99
+CDN Bandwidth Overage (500 GB)         1     $45.00      $45.00
+Dedicated Support SLA (monthly)        1    $120.00     $120.00
+─────────────────────────────────────────────────────────────────────
+                                              SUBTOTAL:  $254.99
+                                              TAX (8%):   $20.40
+                                                 TOTAL:  $275.39
+─────────────────────────────────────────────────────────────────────
+
+PAYMENT TERMS: Net 30
+PAYMENT METHOD: ACH Transfer
+BANK: Silicon Valley Bank
+ROUTING: 121140399
+ACCOUNT: 7284910033
+
+This invoice constitutes an official financial record. Please retain
+for tax and audit purposes. Contact billing@cloudhost.io for disputes.

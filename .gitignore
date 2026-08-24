@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Intent-Store runtime artifacts
+*.db
+*.db-shm
+*.db-wal
+
+# Model cache (downloaded by sentence-transformers / huggingface)
+# These can be large; not committed to the repo.
+.cache/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
