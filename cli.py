@@ -107,11 +107,14 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
             (limit,),
         ).fetchall()
     else:
+        # Default: show all files with recommendations, sorted lowest-score first
+        # (most likely archival candidates at the top)
         rows = conn.execute(
             """
             SELECT path, size, atime, mtime, importance_score, action, justification, status
             FROM files
             WHERE action IS NOT NULL
+              AND status != 'rejected'
             ORDER BY importance_score ASC
             LIMIT ?
             """,
@@ -138,7 +141,7 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
     table.add_column("Score", justify="right")
     table.add_column("Action", justify="center")
     table.add_column("Status", justify="center")
-    table.add_column("Justification", max_width=52, no_wrap=False)
+    table.add_column("Justification", max_width=65, no_wrap=False)
 
     for row in rows:
         filename   = Path(row["path"]).name
@@ -218,7 +221,7 @@ def reject(ctx: click.Context, path: str) -> None:
     new_score = max(row["importance_score"] - REJECT_PENALTY, 0.0)
     conn.execute(
         "UPDATE files SET status = 'rejected', importance_score = ?, "
-        "recommendation = NULL, action = NULL, justification = NULL WHERE path = ?",
+        "action = NULL, justification = NULL WHERE path = ?",
         (new_score, resolved),
     )
     conn.commit()

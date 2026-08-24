@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS files (
     embedding         BLOB,
     importance_score  REAL DEFAULT 0.5,
     status            TEXT DEFAULT 'pending',
-    recommendation    TEXT,
     justification     TEXT,
     action            TEXT
 );

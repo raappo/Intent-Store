@@ -285,7 +285,7 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
             """
             SELECT * FROM files
             WHERE importance_score < ?
-              AND (recommendation IS NULL OR recommendation = '')
+              AND (action IS NULL OR action = '')
               AND status NOT IN ('accepted', 'rejected')
             """,
             (CANDIDATE_THRESHOLD,),
@@ -322,10 +322,10 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
         conn.execute(
             """
             UPDATE files
-            SET recommendation = ?, justification = ?, action = ?
+            SET justification = ?, action = ?
             WHERE path = ?
             """,
-            (action, justification, action, path),
+            (justification, action, path),
         )
         logger.debug("Reasoned %s → %s", path, action)
         processed += 1
