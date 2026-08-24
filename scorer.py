@@ -128,7 +128,13 @@ def score_all(db_path: str = DB_PATH) -> int:
         # to a bonus. If sim_score > 0.3, it starts contributing meaningfully.
         sim_bonus = max(0.0, sim_score - 0.2) * SIMILARITY_BONUS
         
-        final_score = min(1.0, recency_score + pattern_bonus + sim_bonus)
+        junk_penalty = 0.0
+        fname_lower = fname.lower()
+        if any(fname_lower.endswith(ext) for ext in [".log", ".tmp", ".cache", ".bak"]) or \
+           any(sub in fname_lower for sub in ["temp_", "cache", "build_"]):
+            junk_penalty = 0.15
+        
+        final_score = max(0.0, min(1.0, recency_score + pattern_bonus + sim_bonus - junk_penalty))
         
         conn.execute(
             "UPDATE files SET importance_score = ? WHERE path = ?",
