@@ -205,11 +205,16 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
         prompt = _build_prompt(row, snippet, sim)
         result = _call_ollama(prompt)
 
+        is_llm = True
         if result is None:
             result = _fallback_recommend(row, sim)
+            is_llm = False
 
         action        = result.get("action", "keep")
-        justification = result.get("justification", "")
+        raw_just      = result.get("justification", "")
+        
+        prefix = "[LLM] " if is_llm else "[RULE] "
+        justification = prefix + raw_just
 
         if action not in ("archive", "keep", "compress"):
             action = "keep"
