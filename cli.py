@@ -4,7 +4,8 @@ cli.py — Intent-Store command-line interface.
 Commands
 ────────
   scan   <dir>          Walk directory, embed files, score, and reason.
-  report                Print a formatted recommendation table.
+  rescore               Re-run scoring + reasoning on existing indexed files.
+  report                Print a recommendations table.
   accept <path>         Accept a recommendation (boosts importance_score).
   reject <path>         Reject a recommendation (suppresses and penalises score).
 """
@@ -85,7 +86,32 @@ def scan(ctx: click.Context, directory: str, skip_embed: bool, skip_reason: bool
         console.print(f"[green]✔[/green] Generated recommendations for [bold]{n_reasoned}[/bold] files.")
 
     console.print(
-        "\n[bold]Done.[/bold] Run [cyan]intent-store report[/cyan] to see recommendations."
+        "\n[bold]Done.[/bold] Run [cyan]python3 cli.py report[/cyan] to see recommendations."
+    )
+
+
+# ── rescore ───────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--force", is_flag=True, help="Re-reason files that already have a recommendation.")
+@click.pass_context
+def rescore(ctx: click.Context, force: bool) -> None:
+    """Re-run scoring and reasoning on already-indexed files.
+
+    Use this after `demo_seed.py` (or any external timestamp update) to
+    refresh scores and recommendations without re-scanning.
+    """
+    db = ctx.obj["db"]
+
+    with console.status("[bold cyan]Re-scoring files …"):
+        n_scored = score_all(db_path=db)
+    console.print(f"[green]✔[/green] Re-scored [bold]{n_scored}[/bold] files.")
+
+    with console.status("[bold cyan]Re-reasoning candidates …"):
+        n_reasoned = reason_all(db_path=db, force=force)
+    console.print(f"[green]✔[/green] Generated/refreshed [bold]{n_reasoned}[/bold] recommendations.")
+    console.print(
+        "\nRun [cyan]python3 cli.py report[/cyan] to view updated recommendations."
     )
 
 
@@ -165,9 +191,21 @@ def report(ctx: click.Context, show_all: bool, limit: int) -> None:
         table.add_row(filename, size_hr, access_str, score, action_cell, status_cell, just)
 
     console.print(table)
+
+    # Count files not shown (above threshold, no recommendation)
+    conn2 = get_connection(db_path=db)
+    total = conn2.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    conn2.close()
+    hidden = total - len(rows)
+    hidden_note = (
+        f"  [dim]{hidden} additional file(s) scored above the archival threshold "
+        f"and need no action. Use [cyan]--all[/cyan] to view them.[/dim]"
+        if hidden > 0 else ""
+    )
     console.print(
-        f"\n[dim]Showing {len(rows)} file(s). "
+        f"\n[dim]Showing {len(rows)} recommendation(s). "
         "Use [cyan]accept <path>[/cyan] or [cyan]reject <path>[/cyan] to record decisions.[/dim]"
+        + (f"\n{hidden_note}" if hidden_note else "")
     )
 
 

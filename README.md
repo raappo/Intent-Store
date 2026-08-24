@@ -94,7 +94,7 @@ python3 cli.py scan demo/
 python3 demo_seed.py
 
 # Step 3 — Re-run scoring and reasoning with corrected timestamps
-python3 -c "from scorer import score_all; from reasoner import reason_all; score_all(); reason_all()"
+python3 cli.py rescore
 
 # Step 4 — View the recommendation report
 python3 cli.py report
