@@ -112,21 +112,25 @@ def _build_prompt(row: sqlite3.Row, snippet: str, sim_score: float) -> str:
     )
 
     return f"""You are a storage intelligence assistant for a Linux workstation.
-Analyze this file and decide what to do with it. You must return ONLY valid JSON.
+Analyze this file and decide what to do with it (archive, keep, or compress). You must return ONLY valid JSON.
 
 === FILE METADATA ===
 Filename: {filename}
 Size: {size_hr}
 Last Accessed: {days_accessed:.0f} days ago
 Last Modified: {days_modified:.0f} days ago
-Internal Importance Score: {score:.3f} (0=delete, 1=keep)
+Recency/Pattern Score: {score:.3f} (0=delete, 1=keep)
 Semantic Similarity to Important Documents: {sim_score:.3f} (higher is more important)
 {content_section}
 
-Based on this, what is your recommendation?
-Provide a brief justification.
+=== INSTRUCTIONS ===
+Write a 1-2 sentence justification for your recommendation that:
+- References something specific about the file's actual content or type. DO NOT just say "content bears little resemblance to high-importance categories".
+- RECURRENCE REASONING: If the filename or content suggests a periodic/seasonal document (tax, invoice, annual report, renewal), explicitly reason about it. For example, "even though unused recently, this type of file is typically needed again at a predictable future point". This is critical.
+- Varies in phrasing between files (do not use a repeated template sentence structure).
+
 Respond in exactly this JSON format:
-{{"action": "archive" | "keep" | "compress", "justification": "<your short reasoning>"}}
+{{"action": "archive" | "keep" | "compress", "justification": "<your specific, dynamic reasoning>"}}
 """
 
 
@@ -159,12 +163,24 @@ def _fallback_recommend(row: sqlite3.Row, sim_score: float) -> dict:
 
     action = "archive" if score < 0.2 else "keep"
     
-    # Force archive if it's huge and unaccessed
     if size_bytes > 1024 * 1024 * 100 and days_accessed > 180:
         action = "archive"
 
-    justification = f"Evaluated '{filename}' using recency decay (score={score:.3f}), semantic similarity, size, and pattern analysis: "
-    justification += "; ".join(signals) + "."
+    # Make fallback phrasing dynamic
+    import random
+    intros = [
+        f"Looking at {filename}, I noticed",
+        f"For this file ({filename}),",
+        f"Based on the metadata for {filename},",
+        f"Evaluating {filename} reveals that"
+    ]
+    
+    justification = f"{random.choice(intros)} "
+    justification += " and ".join(signals) + "."
+    if pattern_active and action == "keep":
+        justification += " I recommend keeping it because periodic documents are often needed later despite long dormant periods."
+    elif action == "archive":
+        justification += " Given the lack of recent use and low importance, archiving is safe."
 
     return {"action": action, "justification": justification}
 
@@ -181,11 +197,9 @@ def reason_all(db_path: str = DB_PATH, force: bool = False) -> int:
         rows = cursor.execute(
             """
             SELECT * FROM files
-            WHERE importance_score < ?
-              AND (action IS NULL OR action = '')
+            WHERE (action IS NULL OR action = '')
               AND status NOT IN ('accepted', 'rejected')
-            """,
-            (CANDIDATE_THRESHOLD,),
+            """
         ).fetchall()
 
     if not rows:
